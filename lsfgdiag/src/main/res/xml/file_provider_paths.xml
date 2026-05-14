@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Reports go to <app>/files/reports/, exposed via FileProvider so they can be Shared. -->
+    <files-path name="reports" path="reports/" />
+</paths>

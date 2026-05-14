@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Stylised stethoscope diamond: tells you it's a diagnostic tool. -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,30 L74,54 L54,78 L34,54 Z M54,42 L62,54 L54,66 L46,54 Z" />
+</vector>
