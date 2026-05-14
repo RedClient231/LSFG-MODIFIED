@@ -12,8 +12,9 @@ permissions:
 
 jobs:
   build:
-    name: Build LsfgDiag debug APK
+    name: Build LSFG-Android-Application + tools/lsfgdiag debug APKs
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -25,35 +26,52 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+      - name: Cache Gradle (lsfg-app)
+        uses: actions/cache@v4
         with:
-          gradle-version: 8.11.1
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-lsfg-${{ hashFiles('lsfg-app/**/*.gradle*', 'lsfg-app/**/gradle-wrapper.properties', 'tools/lsfgdiag/**/*.gradle*', 'tools/lsfgdiag/**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-lsfg-
 
-      - name: Make gradlew executable
-        run: chmod +x ./gradlew || true
+      # ---- LSFG-Android-Application (the main app, 4 Mali patches) ----
+      - name: Build lsfg-app debug APK
+        working-directory: lsfg-app
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :app:assembleDebug --stacktrace --no-daemon
 
-      - name: Build debug APK
-        # NDK + CMake are auto-installed by the Android SDK manager when the
-        # AGP build resolves them. Default ubuntu-latest images already ship
-        # NDK 26.x; if not, AGP fetches it on demand.
-        run: gradle :lsfgdiag:assembleDebug --stacktrace
+      # ---- tools/lsfgdiag (the diagnostic helper) ----
+      - name: Build lsfgdiag debug APK
+        working-directory: tools/lsfgdiag
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :diag-app:assembleDebug --stacktrace --no-daemon
 
-      - name: Rename APK with build number
+      - name: Stage release artifacts
         run: |
           mkdir -p out
-          cp lsfgdiag/build/outputs/apk/debug/lsfgdiag-debug.apk \
-             "out/lsfgdiag-debug-${{ github.run_number }}.apk"
+          # ABI-split APKs from lsfg-app — main app produces both arm64-v8a + x86_64
+          cp lsfg-app/app/build/outputs/apk/debug/app-arm64-v8a-debug.apk \
+             "out/lsfg-android-mali-patches-arm64-v8a-build${{ github.run_number }}.apk"
+          cp lsfg-app/app/build/outputs/apk/debug/app-x86_64-debug.apk \
+             "out/lsfg-android-mali-patches-x86_64-build${{ github.run_number }}.apk"
+          # Diag app — single universal APK
+          cp tools/lsfgdiag/diag-app/build/outputs/apk/debug/diag-app-debug.apk \
+             "out/lsfgdiag-build${{ github.run_number }}.apk"
+          ls -la out/
 
-      - name: Upload debug APK as workflow artifact
+      - name: Upload all APKs as workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: lsfgdiag-debug-apk
+          name: lsfg-modified-apks
           path: out/*.apk
           if-no-files-found: error
           retention-days: 30
 
-      - name: Publish APK to a rolling "latest-debug" release
+      - name: Publish APKs to a rolling "latest-debug" release
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -65,5 +83,7 @@ jobs:
             --title "Latest debug build (build #${{ github.run_number }})" \
             --notes "Auto-published from commit ${{ github.sha }} on $(date -u +'%Y-%m-%d %H:%M UTC').
 
-          Sideload \`lsfgdiag-debug-${{ github.run_number }}.apk\` on Android 13+." \
-            "out/lsfgdiag-debug-${{ github.run_number }}.apk"
+          **For your phone (Helio G99 / arm64):** \`lsfg-android-mali-patches-arm64-v8a-build${{ github.run_number }}.apk\`
+          **For x86_64 emulators:** \`lsfg-android-mali-patches-x86_64-build${{ github.run_number }}.apk\`
+          **Diagnostic helper:** \`lsfgdiag-build${{ github.run_number }}.apk\`" \
+            out/*.apk

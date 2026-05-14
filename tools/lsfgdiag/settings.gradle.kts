@@ -21,4 +21,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "LsfgDiag"
-include(":lsfgdiag")
+include(":diag-app")
