@@ -31,3 +31,6 @@ hs_err_pid*
 
 # Workspace-only artifacts (we copy APKs to dist/ for fast download but don't commit binaries)
 dist/*.apk
+
+# Override: allow pre-built APKs so users can download directly
+!dist/*.apk
