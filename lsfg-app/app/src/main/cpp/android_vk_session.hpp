@@ -91,6 +91,28 @@ struct VulkanSession {
     // staging-copy mitigation enabled by this flag.
     bool isMali = false;
 
+    // True when the GPU is Imagination PowerVR (vendorId == 0x1010). The
+    // service code in LsfgForegroundService and the upstream README both
+    // call out the same symptoms on PowerVR as on Mali: AHB import quirks
+    // and presentation-time corruption when the swapchain images come from
+    // AHB-imported VkImages. We treat PowerVR like Mali for the staging /
+    // CPU-blit workarounds rather than maintaining two parallel patch sets.
+    bool isPowerVR = false;
+
+    // True when the AHB import path needs the linear-staging mitigation
+    // (currently: Mali OR PowerVR). Hot-path predicate consumed by
+    // importAhbImage in ahb_image_bridge.cpp. Prefer this over checking
+    // vendor IDs directly so future "also needs staging" devices can be
+    // added in one place.
+    bool needsAhbStaging = false;
+
+    // True when the WSI swapchain output path is known-broken on this
+    // driver and we must use the CPU-blit fallback instead — even when
+    // the swapchain extension chain is otherwise present (currently:
+    // Mali OR PowerVR). Read once at session-init and stored so render-loop
+    // hot paths can skip the WSI attempt without re-deriving from vendor.
+    bool disableSwapchain = false;
+
     // Whether the optional VK_EXT_robustness2 extension is enabled. Framegen
     // requires it; if false, framegen initialize() will fail and the caller
     // must surface a clear error to the user.

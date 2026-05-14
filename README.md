@@ -1,6 +1,6 @@
 # LSFG-MODIFIED
 
-Forked [FrankBarretta/LSFG-Android](https://github.com/FrankBarretta/LSFG-Android) **0.1.2** with four targeted patches for Mali / MediaTek devices (Helio G99 + Mali-G57 MC2 was the test target).
+Forked [FrankBarretta/LSFG-Android](https://github.com/FrankBarretta/LSFG-Android) **0.1.2** with targeted patches for Mali / MediaTek / PowerVR devices (Helio G99 + Mali-G57 MC2 was the test target; PowerVR support is grouped from code-reading because the symptom set is identical and the upstream code already calls it out by name).
 
 ## Layout
 
@@ -15,12 +15,12 @@ Forked [FrankBarretta/LSFG-Android](https://github.com/FrankBarretta/LSFG-Androi
 
 | # | File | Change |
 |---|---|---|
-| 1 | `lsfg-app/app/src/main/cpp/ahb_image_bridge.cpp` `importAhbImage()` | **Linear AHB staging on Mali.** When `vk.isMali`, allocates a fresh known-linear AHB and CPU-stages the source MediaProjection AHB through it via `AHardwareBuffer_lock` before wrapping in a `VkImage`. Costs 1–2 ms/frame; fixes Mali tile/format glitches that show up as torn tiles, shifted colour planes, or `vkAllocateMemory` failures. Adreno path unchanged. |
+| 1 | `lsfg-app/app/src/main/cpp/ahb_image_bridge.cpp` `importAhbImage()` | **Linear AHB staging on Mali / PowerVR.** When `vk.needsAhbStaging` (Mali OR PowerVR), allocates a fresh known-linear AHB and CPU-stages the source MediaProjection AHB through it via `AHardwareBuffer_lock` before wrapping in a `VkImage`. Costs 1–2 ms/frame; fixes tile/format glitches that show up as torn tiles, shifted colour planes, or `vkAllocateMemory` failures. Adreno path unchanged. The destination row stride is read back from `AHardwareBuffer_describe` after allocation so we don't write tight rows into a tile-aligned buffer (the original copy did, which silently re-introduced the same shift it was meant to fix). |
 | 2 | `lsfg-app/app/src/main/cpp/android_vk_probe.{cpp,hpp}` + `lsfg_jni.cpp` + `NativeBridge.kt` + `ShaderExtractor.kt` | **Diagnostic strings on shader probe rejection.** The native probe records GPU name, vendor ID, `shaderFloat16`, `shaderInt8`, `vulkanMemoryModel` booleans, and rejected count. New `NativeBridge.getProbeRejectReason()` getter surfaces the reason to the UI; `ShaderExtractor.describe(-12)` now reads it instead of showing "Your GPU may not be compatible". |
-| 3 | `lsfg-app/app/src/main/cpp/android_vk_session.cpp` | **Force CPU blit output on Mali.** When `vendorID == 0x13B5`, sets `out.hasSwapchain = false` to bypass the WSI swapchain entirely. Removes Mali presentation-time corruption when swapchain images are sourced from AHB-imported `VkImage`. The CPU-blit path is the documented fallback so this doesn't introduce new code paths. |
-| 4 | `lsfg-app/app/src/main/java/com/lsfg/android/session/ShizukuCaptureUserService.kt` | **Detect MediaTek-patched `captureDisplay` at construct time.** Before entering the worker loop, takes one throwaway capture; if it returns `null` despite valid args, surfaces a clear UI error pointing at the firmware patch (common on MediaTek HyperOS / OriginOS / Helio G99 firmware) instead of silently spinning forever. |
+| 3 | `lsfg-app/app/src/main/cpp/android_vk_session.cpp` | **Force CPU blit output on Mali / PowerVR.** When `vendorID == 0x13B5` (ARM) or `0x1010` (Imagination), sets `out.hasSwapchain = false` to bypass the WSI swapchain entirely. Removes presentation-time corruption when swapchain images are sourced from AHB-imported `VkImage`. The CPU-blit path is the documented fallback so this doesn't introduce new code paths. |
+| 4 | `lsfg-app/app/src/main/java/com/lsfg/android/session/ShizukuCaptureUserService.kt` | **Detect vendor-patched `captureDisplay` at construct time.** Before entering the worker loop, tries up to three throwaway captures with 50 ms backoff (handles transient SurfaceFlinger warm-up failures observed on stock Adreno). If all three return `null`, surfaces a clear UI error pointing at the firmware patch (common on MediaTek HyperOS / OriginOS / Helio G99 firmware) and falls back to MediaProjection-only mode instead of silently spinning forever. |
 
-Plus `android_vk_session.hpp` gains a `vendorId` and `isMali` flag so patches #1 and #3 are dispatchable without adding magic numbers in inner loops.
+Plus `android_vk_session.hpp` gains `vendorId`, `isMali`, `isPowerVR`, `needsAhbStaging`, and `disableSwapchain` flags so the patches are dispatchable without adding magic numbers in inner loops.
 
 ## Honest limitations
 

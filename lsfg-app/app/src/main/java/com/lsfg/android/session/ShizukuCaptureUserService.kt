@@ -57,27 +57,50 @@ class ShizukuCaptureUserService : IShizukuCaptureService.Stub() {
                 return
             }
 
-        // ---- MediaTek-patched captureDisplay smoke test --------------------
-        // Reflection chain resolving is necessary but not sufficient. MediaTek
-        // firmwares (HyperOS / OriginOS / many vendor builds shipping on
-        // Helio G99 / Dimensity 700 etc.) keep the captureDisplay symbol but
-        // patch its native implementation to return null when called from
-        // non-system UID — even shell. There's no way to distinguish that
-        // from a transient capture failure other than to try it once and see.
+        // ---- captureDisplay smoke test (transient + vendor-firmware-patch) -
+        // Reflection chain resolving is necessary but not sufficient. Two
+        // failure modes need disambiguating here:
         //
-        // Take a single throwaway capture before entering the worker loop. If
-        // it returns null on the first attempt despite the args being valid,
-        // we surface a specific error to the UI instead of silently spinning
-        // forever in the loop with a black screen.
-        val smoke = runCatching { capture.captureHardwareBuffer() }.getOrNull()
+        //   1. Transient: the system's first capture call sometimes returns
+        //      null while SurfaceFlinger is still warming up its capture
+        //      session — observed on stock Pixel and Adreno builds. Recovers
+        //      on the next attempt.
+        //   2. Sticky vendor patch: MediaTek (HyperOS / OriginOS / many
+        //      Helio G99 / Dimensity 700 firmwares), some Honor / Vivo
+        //      builds, and a handful of MIUI revisions keep the
+        //      captureDisplay symbol but patch its native implementation to
+        //      return null when called from a non-system UID — even shell.
+        //      No amount of retrying recovers this.
+        //
+        // Take up to three throwaway captures with a short backoff. If at
+        // least one returns a buffer, treat the path as live and continue.
+        // If all three return null, we surface a clear UI error pointing at
+        // the firmware patch instead of silently spinning forever.
+        var smoke: HardwareBuffer? = null
+        var smokeAttempts = 0
+        while (smokeAttempts < 3 && running.get()) {
+            smokeAttempts++
+            smoke = runCatching { capture.captureHardwareBuffer() }.getOrNull()
+            if (smoke != null) break
+            // 50 ms backoff is enough to let SurfaceFlinger settle without
+            // adding noticeable startup latency on the happy path.
+            try {
+                Thread.sleep(50L)
+            } catch (_: InterruptedException) {
+                running.set(false)
+                return
+            }
+        }
         if (smoke == null) {
-            Log.w(TAG, "Smoke test: captureDisplay returned null — likely MediaTek/vendor firmware patch")
+            Log.w(TAG, "Smoke test: captureDisplay returned null on $smokeAttempts attempts — likely vendor firmware patch")
             callback.onError(
                 "Shizuku capture is blocked on this firmware. The reflection chain " +
-                "resolved (so the API is visible) but captureDisplay returned null. " +
-                "This typically means a vendor (often MediaTek) has patched " +
-                "SurfaceControl.captureDisplay to refuse non-system callers. " +
-                "Try MediaProjection mode instead."
+                "resolved (so the API is visible) but captureDisplay returned null " +
+                "on $smokeAttempts attempts. This typically means a vendor (often " +
+                "MediaTek) has patched SurfaceControl.captureDisplay to refuse " +
+                "non-system callers. The app will continue using MediaProjection " +
+                "for the visible video path; only the Shizuku timing side channel " +
+                "is unavailable."
             )
             running.set(false)
             return
