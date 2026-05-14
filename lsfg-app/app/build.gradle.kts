@@ -112,6 +112,14 @@ android {
         abi {
             isEnable = true
             reset()
+            // arm64-v8a is the primary target for all modern Android devices.
+            // armeabi-v7a is intentionally excluded: Android 10 (minSdk=29)
+            // dropped Vulkan driver support on 32-bit ARM entirely — any
+            // real armeabi-v7a device that somehow passes the minSdk gate
+            // will fail volkInitialize() and the session will refuse to start.
+            // Shipping a v7a split would only add APK size without adding
+            // working installs.
+            // x86_64 is for emulators (typical AVD config).
             include("arm64-v8a", "x86_64")
             isUniversalApk = false
         }

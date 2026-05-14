@@ -219,12 +219,13 @@ int importAhbImage(VulkanSession &vk, AHardwareBuffer *ahb, AhbImage &out) {
     out = {};
     if (ahb == nullptr) return kErrAhbAllocate;
 
-    // ---- Mali staging path -------------------------------------------------
-    // On ARM Mali drivers (MediaTek and some Samsung firmwares) the AHB that
-    // MediaProjection's ImageReader hands us frequently arrives with a
-    // vendor-specific tiled or compressed layout that the Adreno-targeted
-    // import path mis-decodes — torn tiles, shifted colour planes, and
-    // occasional vkAllocateMemory failures because the imported memory's
+    // ---- Linear-staging import path ---------------------------------------
+    // On ARM Mali drivers (MediaTek and some Samsung firmwares) and on
+    // Imagination PowerVR drivers, the AHB that MediaProjection's
+    // ImageReader hands us frequently arrives with a vendor-specific tiled
+    // or compressed layout that the Adreno-targeted import path
+    // mis-decodes — torn tiles, shifted colour planes, and occasional
+    // vkAllocateMemory failures because the imported memory's
     // memoryTypeBits doesn't intersect any usable type.
     //
     // Mitigation: allocate a fresh, known-linear AHB ourselves (which uses
@@ -232,8 +233,9 @@ int importAhbImage(VulkanSession &vk, AHardwareBuffer *ahb, AhbImage &out) {
     // flags from createAhbImage's path) and CPU-copy the source frame into
     // it via AHardwareBuffer_lock. Costs ~1-2 ms/frame at 1080p — measurable
     // but acceptable for a fix that converts "glitchy + crashy" into
-    // "playable". On non-Mali devices we keep the zero-copy import path.
-    if (vk.isMali) {
+    // "playable". On Adreno (and any other vendor we haven't flagged) we
+    // keep the zero-copy import path.
+    if (vk.needsAhbStaging) {
         AHardwareBuffer_Desc srcDesc{};
         AHardwareBuffer_describe(ahb, &srcDesc);
 
@@ -247,7 +249,7 @@ int importAhbImage(VulkanSession &vk, AHardwareBuffer *ahb, AhbImage &out) {
             case AHARDWAREBUFFER_FORMAT_R8G8B8X8_UNORM:
                 dstVk = VK_FORMAT_R8G8B8A8_UNORM; break;
             default:
-                LOGW("Mali AHB import: source format %u unsupported by staging path; "
+                LOGW("AHB staging: source format %u unsupported by staging path; "
                      "falling back to zero-copy import (may glitch)", srcDesc.format);
                 break;
         }
@@ -260,7 +262,7 @@ int importAhbImage(VulkanSession &vk, AHardwareBuffer *ahb, AhbImage &out) {
             const int allocRc = createAhbImage(vk, srcDesc.width, srcDesc.height,
                                                dstVk, staged);
             if (allocRc != kOk) {
-                LOGE("Mali AHB import: staging allocation failed rc=%d; "
+                LOGE("AHB staging: staging allocation failed rc=%d; "
                      "falling back to zero-copy", allocRc);
                 destroyAhbImage(vk, staged);
                 // fall through to zero-copy below
@@ -271,7 +273,7 @@ int importAhbImage(VulkanSession &vk, AHardwareBuffer *ahb, AhbImage &out) {
                 int lockRcSrc = AHardwareBuffer_lock(ahb,
                     AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN, srcFence, nullptr, &srcBase);
                 if (lockRcSrc != 0 || srcBase == nullptr) {
-                    LOGE("Mali AHB import: source AHardwareBuffer_lock failed rc=%d; "
+                    LOGE("AHB staging: source AHardwareBuffer_lock failed rc=%d; "
                          "falling back to zero-copy", lockRcSrc);
                     destroyAhbImage(vk, staged);
                 } else {
@@ -280,24 +282,29 @@ int importAhbImage(VulkanSession &vk, AHardwareBuffer *ahb, AhbImage &out) {
                     int lockRcDst = AHardwareBuffer_lock(staged.ahb,
                         AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN, -1, nullptr, &dstBase);
                     if (lockRcDst != 0 || dstBase == nullptr) {
-                        LOGE("Mali AHB import: dest AHardwareBuffer_lock failed rc=%d; "
+                        LOGE("AHB staging: dest AHardwareBuffer_lock failed rc=%d; "
                              "falling back to zero-copy", lockRcDst);
                         AHardwareBuffer_unlock(ahb, nullptr);
                         destroyAhbImage(vk, staged);
                     } else {
-                        // Copy row-by-row using the source's reported stride.
-                        // Mali commonly reports a stride wider than width
-                        // for 64-byte tile alignment; we still write a tight
-                        // dest stride because our owned dest is plain RGBA.
+                        // Query the destination's ACTUAL stride after allocation.
+                        // AHardwareBuffer_allocate was called with stride=0 (auto),
+                        // and Mali / PowerVR drivers pad to tile alignment — using a
+                        // tight dest stride (width*bpp) into a wider buffer shifts
+                        // every row after the first and reproduces the exact
+                        // tile-glitch symptom this staging path was meant to fix.
+                        AHardwareBuffer_Desc dstDesc{};
+                        AHardwareBuffer_describe(staged.ahb, &dstDesc);
                         const uint32_t bpp = 4u;  // RGBA_8888 / RGBX_8888
                         const uint32_t srcRowBytes = srcDesc.stride * bpp;
-                        const uint32_t dstRowBytes = srcDesc.width * bpp;
+                        const uint32_t dstRowBytes = dstDesc.stride * bpp;
+                        const uint32_t copyBytes = srcDesc.width * bpp;
                         const auto *srcBytes = static_cast<const uint8_t *>(srcBase);
                         auto *dstBytes = static_cast<uint8_t *>(dstBase);
                         for (uint32_t y = 0; y < srcDesc.height; ++y) {
                             std::memcpy(dstBytes + y * dstRowBytes,
                                         srcBytes + y * srcRowBytes,
-                                        dstRowBytes);
+                                        copyBytes);
                         }
                         AHardwareBuffer_unlock(staged.ahb, nullptr);
                         AHardwareBuffer_unlock(ahb, nullptr);

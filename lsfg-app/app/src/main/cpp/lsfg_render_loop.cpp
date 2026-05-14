@@ -719,6 +719,36 @@ bool createSwapchain() {
         return false;
     }
 
+    // Pick the composite alpha mode that lets the overlay window stay
+    // transparent (so the game is visible below it).
+    //
+    // The overlay is declared PixelFormat.TRANSLUCENT on the Java side.
+    // VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR would tell SurfaceFlinger to treat
+    // the swapchain layer as fully opaque, blacking out the game. We must
+    // use INHERIT (respects the ANativeWindow's declared format/alpha) when
+    // available; fall back to PRE_MULTIPLIED, then POST_MULTIPLIED, then
+    // OPAQUE as a last resort. OPAQUE is only safe for a full-screen
+    // replacement compositor, which is not what we are.
+    const auto pickCompositeAlpha = [&]() -> VkCompositeAlphaFlagBitsKHR {
+        // Priority order: INHERIT (lets the platform handle blending through
+        // the window's PixelFormat) > PRE_MULTIPLIED > POST_MULTIPLIED > OPAQUE
+        const VkCompositeAlphaFlagBitsKHR kOrder[] = {
+            VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR,
+            VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR,
+            VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR,
+            VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+        };
+        for (auto bit : kOrder) {
+            if (caps.supportedCompositeAlpha & bit) {
+                return bit;
+            }
+        }
+        return VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    };
+    const VkCompositeAlphaFlagBitsKHR compositeAlpha = pickCompositeAlpha();
+    LOGI("createSwapchain: compositeAlpha=0x%x (supportedMask=0x%x)",
+         (unsigned)compositeAlpha, (unsigned)caps.supportedCompositeAlpha);
+
     const VkSwapchainCreateInfoKHR sci2{
         .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
         .surface = g.swap.surface,
@@ -730,7 +760,7 @@ bool createSwapchain() {
         .imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT,
         .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .preTransform = caps.currentTransform,
-        .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+        .compositeAlpha = compositeAlpha,
         .presentMode = presentMode,
         .clipped = VK_TRUE,
     };
@@ -866,6 +896,8 @@ bool blitOutputToSwapchain(const AhbImage &src) {
         0, 0, nullptr, 0, nullptr, 2, pre);
 
     static std::atomic<bool> loggedBlitMode{false};
+    // Reset the log flag each time the swapchain is rebuilt (extent may have changed).
+    loggedBlitMode.store(false, std::memory_order_relaxed);
 
     if (src.extent.width == g.swap.extent.width &&
         src.extent.height == g.swap.extent.height) {

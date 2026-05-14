@@ -218,6 +218,19 @@ int create_session(VulkanSession &out) {
     // workarounds on this flag rather than driver version because vendor
     // string heuristics are brittle across OEMs.
     out.isMali = (props.vendorID == 0x13B5);
+    // PowerVR (Imagination, vendorID 0x1010) shows the same class of
+    // symptoms as Mali in this app: AHB import format quirks and WSI
+    // presentation corruption when swapchain images are sourced from
+    // AHB-imported VkImages. Several call sites across the codebase
+    // (LsfgForegroundService.kt, the upstream README) already call this
+    // out by name, so it's not a speculative grouping. Treat PowerVR the
+    // same as Mali for the staging-copy and CPU-blit workarounds.
+    out.isPowerVR = (props.vendorID == 0x1010);
+    out.needsAhbStaging = out.isMali || out.isPowerVR;
+    out.disableSwapchain = out.isMali || out.isPowerVR;
+    const char *workaroundTag =
+        out.isMali    ? "  [Mali workarounds enabled]" :
+        out.isPowerVR ? "  [PowerVR workarounds enabled]" : "";
     LOGI("Using GPU: %s (API %u.%u.%u, vendor=0x%x device=0x%x uuid=0x%llx)%s",
          props.deviceName,
          VK_VERSION_MAJOR(props.apiVersion),
@@ -225,7 +238,7 @@ int create_session(VulkanSession &out) {
          VK_VERSION_PATCH(props.apiVersion),
          props.vendorID, props.deviceID,
          (unsigned long long)out.deviceUuid,
-         out.isMali ? "  [Mali workarounds enabled]" : "");
+         workaroundTag);
 
     out.computeFamilyIdx = find_compute_family(out.physicalDevice);
     if (out.computeFamilyIdx == UINT32_MAX) {
@@ -286,17 +299,19 @@ int create_session(VulkanSession &out) {
              (int)hasSurfaceExts, (int)hasSwapchainDevExt);
     }
 
-    // Mali workaround: force CPU-blit output even when the swapchain chain is
-    // present. ARM Mali drivers (especially MediaTek-tuned revisions) have
-    // a track record of presentation-time corruption when the swapchain
-    // images are sourced from AHB-imported VkImages — torn tiles, shifted
-    // colour planes, occasional driver hangs in vkQueuePresentKHR. The
-    // CPU-blit fallback bypasses the swapchain entirely (writes through
-    // ANativeWindow_lock + memcpy) and is what the Adreno path falls back
-    // to anyway when WSI is unavailable, so we know it works end-to-end.
-    if (out.isMali && out.hasSwapchain) {
-        LOGW("Mali detected — disabling WSI swapchain output and forcing CPU blit "
-             "(works around tile/format glitches in vkQueuePresentKHR on Mali drivers)");
+    // Vendor workaround: force CPU-blit output even when the swapchain
+    // chain is present. ARM Mali (MediaTek-tuned revisions especially) and
+    // Imagination PowerVR drivers both have a track record of
+    // presentation-time corruption when the swapchain images are sourced
+    // from AHB-imported VkImages — torn tiles, shifted colour planes,
+    // occasional driver hangs in vkQueuePresentKHR. The CPU-blit fallback
+    // bypasses the swapchain entirely (writes through ANativeWindow_lock +
+    // memcpy) and is what the Adreno path falls back to anyway when WSI is
+    // unavailable, so we know it works end-to-end.
+    if (out.disableSwapchain && out.hasSwapchain) {
+        LOGW("%s detected — disabling WSI swapchain output and forcing CPU blit "
+             "(works around tile/format glitches in vkQueuePresentKHR on this driver)",
+             out.isMali ? "Mali" : "PowerVR");
         out.hasSwapchain = false;
     }
 
@@ -581,6 +596,9 @@ void destroy_session(VulkanSession &s) {
     s.deviceUuid = 0;
     s.vendorId = 0;
     s.isMali = false;
+    s.isPowerVR = false;
+    s.needsAhbStaging = false;
+    s.disableSwapchain = false;
     s.hasRobustness2 = false;
     s.hasQueueFamilyForeign = false;
     s.hasSwapchain = false;
